@@ -49,7 +49,21 @@ data class CompletionRecord(
 
 @Serializable
 data class AppSettings(
-    val schemaVersion: Int = 1
+    val schemaVersion: Int = 1,
+    val notificationsEnabled: Boolean = true,
+    val themePreset: String = "cycle_blue",
+    val customTheme: CustomTheme = CustomTheme()
+)
+
+@Serializable
+data class CustomTheme(
+    val primary: Long = 0xFF8AB4F8,
+    val secondary: Long = 0xFF8AB4F8,
+    val tertiary: Long = 0xFFE0C36A,
+    val background: Long = 0xFF0B0C0E,
+    val surface: Long = 0xFF15171A,
+    val surfaceVariant: Long = 0xFF202329,
+    val outline: Long = 0xFF3B4048
 )
 
 @Serializable

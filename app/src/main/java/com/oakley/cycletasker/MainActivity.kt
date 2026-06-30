@@ -78,6 +78,8 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.oakley.cycletasker.data.AppState
+import com.oakley.cycletasker.data.AppSettings
+import com.oakley.cycletasker.data.CustomTheme
 import com.oakley.cycletasker.data.CycleDay
 import com.oakley.cycletasker.data.CycleRoutine
 import com.oakley.cycletasker.data.CycleTask
@@ -88,6 +90,7 @@ import com.oakley.cycletasker.domain.CalendarLabel
 import com.oakley.cycletasker.domain.ScheduleEngine
 import com.oakley.cycletasker.domain.TodayTask
 import com.oakley.cycletasker.ui.theme.CycleTaskerTheme
+import com.oakley.cycletasker.ui.theme.UiThemeColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.Instant
@@ -115,6 +118,11 @@ private enum class Tab(val title: String, val iconText: String) {
     Settings("Settings", "S")
 }
 
+private enum class SettingsSection(val title: String) {
+    General("General"),
+    ThemeUi("Theme/UI")
+}
+
 private val TagPalette = listOf(
     0xFF64B5F6,
     0xFFA5D6A7,
@@ -124,6 +132,96 @@ private val TagPalette = listOf(
     0xFF80CBC4,
     0xFFFFAB91,
     0xFFE6EE9C
+)
+
+private data class ThemePreset(
+    val key: String,
+    val name: String,
+    val colors: CustomTheme
+)
+
+private val ThemePresets = listOf(
+    ThemePreset(
+        key = "cycle_blue",
+        name = "Cycle Blue",
+        colors = CustomTheme(
+            primary = 0xFF8AB4F8,
+            secondary = 0xFF8AB4F8,
+            tertiary = 0xFFE0C36A,
+            background = 0xFF0B0C0E,
+            surface = 0xFF15171A,
+            surfaceVariant = 0xFF202329,
+            outline = 0xFF3B4048
+        )
+    ),
+    ThemePreset(
+        key = "graphite",
+        name = "Graphite",
+        colors = CustomTheme(
+            primary = 0xFFD1D5DB,
+            secondary = 0xFF9CA3AF,
+            tertiary = 0xFF93C5FD,
+            background = 0xFF090A0B,
+            surface = 0xFF151619,
+            surfaceVariant = 0xFF24262B,
+            outline = 0xFF444850
+        )
+    ),
+    ThemePreset(
+        key = "teal",
+        name = "Teal",
+        colors = CustomTheme(
+            primary = 0xFF80CBC4,
+            secondary = 0xFF8AB4F8,
+            tertiary = 0xFFFFD166,
+            background = 0xFF07100F,
+            surface = 0xFF111B1A,
+            surfaceVariant = 0xFF1D2B2A,
+            outline = 0xFF35514E
+        )
+    ),
+    ThemePreset(
+        key = "amber",
+        name = "Amber",
+        colors = CustomTheme(
+            primary = 0xFFFFD166,
+            secondary = 0xFF8AB4F8,
+            tertiary = 0xFFFFAB91,
+            background = 0xFF0E0B06,
+            surface = 0xFF18140D,
+            surfaceVariant = 0xFF282115,
+            outline = 0xFF4A3C25
+        )
+    ),
+    ThemePreset(
+        key = "rose",
+        name = "Rose",
+        colors = CustomTheme(
+            primary = 0xFFFF8A80,
+            secondary = 0xFF8AB4F8,
+            tertiary = 0xFFB39DDB,
+            background = 0xFF10090A,
+            surface = 0xFF1B1113,
+            surfaceVariant = 0xFF2B1C20,
+            outline = 0xFF50353B
+        )
+    )
+)
+
+private val CustomColorChoices = listOf(
+    0xFF8AB4F8,
+    0xFF64B5F6,
+    0xFF80CBC4,
+    0xFFA5D6A7,
+    0xFFFFD166,
+    0xFFFFAB91,
+    0xFFFF8A80,
+    0xFFB39DDB,
+    0xFFD1D5DB,
+    0xFF0B0C0E,
+    0xFF15171A,
+    0xFF202329,
+    0xFF3B4048
 )
 
 private val DateFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE d MMM", Locale.UK)
@@ -159,16 +257,22 @@ private fun CycleTaskerApp(repository: CycleTaskerRepository) {
         notificationPermissionGranted = granted
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(state.settings.notificationsEnabled) {
         CycleTaskerNotifications.createChannel(context)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !notificationPermissionGranted) {
+        if (
+            state.settings.notificationsEnabled &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !notificationPermissionGranted
+        ) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 
-    LaunchedEffect(state, notificationPermissionGranted) {
-        if (notificationPermissionGranted) {
+    LaunchedEffect(state, notificationPermissionGranted, state.settings.notificationsEnabled) {
+        if (state.settings.notificationsEnabled && notificationPermissionGranted) {
             CycleTaskerNotifications.startOrUpdate(context)
+        } else {
+            CycleTaskerNotifications.stop(context)
         }
     }
 
@@ -287,7 +391,7 @@ private fun CycleTaskerApp(repository: CycleTaskerRepository) {
         }
     }
 
-    CycleTaskerTheme {
+    CycleTaskerTheme(colors = state.settings.toThemeColors()) {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             bottomBar = {
@@ -364,8 +468,20 @@ private fun CycleTaskerApp(repository: CycleTaskerRepository) {
                         )
 
                         Tab.Settings -> SettingsScreen(
+                            settings = state.settings,
                             storageLocation = repository.storageDescription(),
                             message = settingsMessage,
+                            notificationPermissionGranted = notificationPermissionGranted,
+                            onSettingsChange = { settings ->
+                                saveState(state.copy(settings = settings))
+                            },
+                            onRequestNotificationPermission = {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                } else {
+                                    notificationPermissionGranted = true
+                                }
+                            },
                             onExport = {
                                 exportLauncher.launch("cycletasker-backup-${LocalDate.now()}.json")
                             },
@@ -1157,13 +1273,18 @@ private fun DayHistoryCard(
 
 @Composable
 private fun SettingsScreen(
+    settings: AppSettings,
     storageLocation: String,
     message: String?,
+    notificationPermissionGranted: Boolean,
+    onSettingsChange: (AppSettings) -> Unit,
+    onRequestNotificationPermission: () -> Unit,
     onExport: () -> Unit,
     onImport: () -> Unit,
     onReset: () -> Unit
 ) {
     var confirmingReset by remember { mutableStateOf(false) }
+    var selectedSection by remember { mutableStateOf(SettingsSection.General) }
 
     if (confirmingReset) {
         AlertDialog(
@@ -1193,43 +1314,231 @@ private fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         HeaderBlock(title = "Settings", subtitle = "Local JSON only")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            SettingsSection.entries.forEach { section ->
+                ToggleButton(
+                    text = section.title,
+                    selected = selectedSection == section,
+                    modifier = Modifier.weight(1f),
+                    onClick = { selectedSection = section }
+                )
+            }
+        }
         message?.let {
             QuietCard {
                 Text(it, color = MaterialTheme.colorScheme.secondary)
             }
         }
-        Button(onClick = onExport, modifier = Modifier.fillMaxWidth()) {
-            Text("Export JSON backup")
+
+        when (selectedSection) {
+            SettingsSection.General -> GeneralSettingsSection(
+                settings = settings,
+                storageLocation = storageLocation,
+                notificationPermissionGranted = notificationPermissionGranted,
+                onSettingsChange = onSettingsChange,
+                onRequestNotificationPermission = onRequestNotificationPermission,
+                onExport = onExport,
+                onImport = onImport,
+                onResetClick = { confirmingReset = true }
+            )
+
+            SettingsSection.ThemeUi -> ThemeUiSettingsSection(
+                settings = settings,
+                onSettingsChange = onSettingsChange
+            )
         }
-        OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth()) {
-            Text("Import JSON backup")
+    }
+}
+
+@Composable
+private fun GeneralSettingsSection(
+    settings: AppSettings,
+    storageLocation: String,
+    notificationPermissionGranted: Boolean,
+    onSettingsChange: (AppSettings) -> Unit,
+    onRequestNotificationPermission: () -> Unit,
+    onExport: () -> Unit,
+    onImport: () -> Unit,
+    onResetClick: () -> Unit
+) {
+    QuietCard {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 12.dp)
+            ) {
+                Text("Today's completion notification", fontWeight = FontWeight.SemiBold)
+                Text(
+                    when {
+                        !settings.notificationsEnabled -> "Off"
+                        notificationPermissionGranted -> "On"
+                        else -> "Permission needed"
+                    },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = settings.notificationsEnabled,
+                onCheckedChange = { enabled ->
+                    onSettingsChange(settings.copy(notificationsEnabled = enabled))
+                    if (enabled && !notificationPermissionGranted) {
+                        onRequestNotificationPermission()
+                    }
+                }
+            )
+        }
+        if (settings.notificationsEnabled && !notificationPermissionGranted) {
+            OutlinedButton(
+                onClick = onRequestNotificationPermission,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Allow notifications")
+            }
+        }
+    }
+
+    Button(onClick = onExport, modifier = Modifier.fillMaxWidth()) {
+        Text("Export JSON backup")
+    }
+    OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth()) {
+        Text("Import JSON backup")
+    }
+    OutlinedButton(
+        onClick = onResetClick,
+        modifier = Modifier.fillMaxWidth(),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF8A80))
+    ) {
+        Text("Reset all data")
+    }
+    QuietCard {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Storage", fontWeight = FontWeight.SemiBold)
+            Text(
+                storageLocation,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                "Backups contain individual_tasks, cycle_routines, completion_history, and settings.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+    QuietCard {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("App", fontWeight = FontWeight.SemiBold)
+            Text("CycleTasker 1.0", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Offline. No accounts. No cloud. No internet permission.")
+        }
+    }
+}
+
+@Composable
+private fun ThemeUiSettingsSection(
+    settings: AppSettings,
+    onSettingsChange: (AppSettings) -> Unit
+) {
+    QuietCard {
+        Text("Presets", fontWeight = FontWeight.SemiBold)
+        ThemePresets.forEach { preset ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable {
+                        onSettingsChange(
+                            settings.copy(
+                                themePreset = preset.key,
+                                customTheme = preset.colors
+                            )
+                        )
+                    }
+                    .padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ColorDot(preset.colors.primary)
+                    ColorDot(preset.colors.surface)
+                    Text(preset.name)
+                }
+                if (settings.themePreset == preset.key) {
+                    Text("Selected", color = MaterialTheme.colorScheme.primary)
+                }
+            }
         }
         OutlinedButton(
-            onClick = { confirmingReset = true },
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF8A80))
+            onClick = {
+                onSettingsChange(settings.copy(themePreset = "custom"))
+            },
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Text("Reset all data")
+            Text("Custom")
         }
+    }
+
+    if (settings.themePreset == "custom") {
         QuietCard {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Storage", fontWeight = FontWeight.SemiBold)
-                Text(
-                    storageLocation,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    "Backups contain individual_tasks, cycle_routines, completion_history, and settings.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-        QuietCard {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("App", fontWeight = FontWeight.SemiBold)
-                Text("CycleTasker 1.0", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("Offline. No accounts. No cloud. No internet permission.")
-            }
+            Text("Custom colours", fontWeight = FontWeight.SemiBold)
+            ThemeColorPicker(
+                label = "Primary",
+                value = settings.customTheme.primary,
+                onSelected = {
+                    onSettingsChange(settings.copy(customTheme = settings.customTheme.copy(primary = it)))
+                }
+            )
+            ThemeColorPicker(
+                label = "Secondary",
+                value = settings.customTheme.secondary,
+                onSelected = {
+                    onSettingsChange(settings.copy(customTheme = settings.customTheme.copy(secondary = it)))
+                }
+            )
+            ThemeColorPicker(
+                label = "Tertiary",
+                value = settings.customTheme.tertiary,
+                onSelected = {
+                    onSettingsChange(settings.copy(customTheme = settings.customTheme.copy(tertiary = it)))
+                }
+            )
+            ThemeColorPicker(
+                label = "Background",
+                value = settings.customTheme.background,
+                onSelected = {
+                    onSettingsChange(settings.copy(customTheme = settings.customTheme.copy(background = it)))
+                }
+            )
+            ThemeColorPicker(
+                label = "Surface",
+                value = settings.customTheme.surface,
+                onSelected = {
+                    onSettingsChange(settings.copy(customTheme = settings.customTheme.copy(surface = it)))
+                }
+            )
+            ThemeColorPicker(
+                label = "Surface alt",
+                value = settings.customTheme.surfaceVariant,
+                onSelected = {
+                    onSettingsChange(settings.copy(customTheme = settings.customTheme.copy(surfaceVariant = it)))
+                }
+            )
+            ThemeColorPicker(
+                label = "Outline",
+                value = settings.customTheme.outline,
+                onSelected = {
+                    onSettingsChange(settings.copy(customTheme = settings.customTheme.copy(outline = it)))
+                }
+            )
         }
     }
 }
@@ -1450,6 +1759,53 @@ private fun ColorPicker(selected: Long, onSelected: (Long) -> Unit) {
 }
 
 @Composable
+private fun ThemeColorPicker(
+    label: String,
+    value: Long,
+    onSelected: (Long) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(label)
+            ColorDot(value)
+        }
+        CustomColorChoices.chunked(7).forEach { rowColors ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                rowColors.forEach { color ->
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .background(toColor(color))
+                            .border(
+                                width = if (value == color) 3.dp else 1.dp,
+                                color = if (value == color) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline,
+                                shape = CircleShape
+                            )
+                            .clickable { onSelected(color) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ColorDot(color: Long) {
+    Box(
+        modifier = Modifier
+            .size(18.dp)
+            .clip(CircleShape)
+            .background(toColor(color))
+            .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
+    )
+}
+
+@Composable
 private fun TagPill(text: String, color: Long) {
     if (text.isBlank()) return
     Box(
@@ -1531,6 +1887,23 @@ private fun normalizeTag(value: String): String {
 
 private fun toColor(value: Long): Color {
     return Color(value)
+}
+
+private fun AppSettings.toThemeColors(): UiThemeColors {
+    val source = if (themePreset == "custom") {
+        customTheme
+    } else {
+        ThemePresets.firstOrNull { it.key == themePreset }?.colors ?: ThemePresets.first().colors
+    }
+    return UiThemeColors(
+        primary = source.primary,
+        secondary = source.secondary,
+        tertiary = source.tertiary,
+        background = source.background,
+        surface = source.surface,
+        surfaceVariant = source.surfaceVariant,
+        outline = source.outline
+    )
 }
 
 private fun LocalDate.toPickerMillis(): Long {

@@ -10,8 +10,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.oakley.cycletasker.data.AppState
 import com.oakley.cycletasker.data.CycleTaskerRepository
@@ -19,34 +22,75 @@ import com.oakley.cycletasker.domain.ScheduleEngine
 import java.time.LocalDate
 
 class CompletionNotificationService : Service() {
+    private val handler = Handler(Looper.getMainLooper())
+    private val refreshRunnable = object : Runnable {
+        override fun run() {
+            refreshForegroundNotification()
+            handler.postDelayed(this, 15_000)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         CycleTaskerNotifications.createChannel(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val state = CycleTaskerRepository(filesDir).load()
-        startForeground(
-            CycleTaskerNotifications.NotificationId,
-            CycleTaskerNotifications.buildNotification(this, state)
-        )
+        if (intent?.action == CycleTaskerNotifications.ActionStop) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        refreshForegroundNotification()
+        handler.removeCallbacks(refreshRunnable)
+        handler.postDelayed(refreshRunnable, 15_000)
         return START_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onDestroy() {
+        handler.removeCallbacks(refreshRunnable)
+        super.onDestroy()
+    }
+
+    private fun refreshForegroundNotification() {
+        val state = CycleTaskerRepository(filesDir).load()
+        if (!state.settings.notificationsEnabled || !CycleTaskerNotifications.hasPermission(this)) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+        startForeground(
+            CycleTaskerNotifications.NotificationId,
+            CycleTaskerNotifications.buildNotification(this, state)
+        )
+    }
 }
 
 object CycleTaskerNotifications {
     const val ChannelId = "todays_completion"
     const val NotificationId = 101
+    const val ActionStop = "com.oakley.cycletasker.STOP_COMPLETION_NOTIFICATION"
 
     fun startOrUpdate(context: Context) {
         if (!hasPermission(context)) return
+        val state = CycleTaskerRepository(context.filesDir).load()
+        if (!state.settings.notificationsEnabled) return
         createChannel(context)
         ContextCompat.startForegroundService(
             context,
             Intent(context, CompletionNotificationService::class.java)
         )
+    }
+
+    fun stop(context: Context) {
+        context.startService(
+            Intent(context, CompletionNotificationService::class.java).apply {
+                action = ActionStop
+            }
+        )
+        NotificationManagerCompat.from(context).cancel(NotificationId)
     }
 
     fun createChannel(context: Context) {
@@ -88,7 +132,7 @@ object CycleTaskerNotifications {
         )
 
         return NotificationCompat.Builder(context, ChannelId)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("TODAY'S COMPLETION")
             .setContentText(content)
             .setContentIntent(pendingIntent)
