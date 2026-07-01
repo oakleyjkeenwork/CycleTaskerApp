@@ -1870,7 +1870,7 @@ private fun GeneralSettingsSection(
     QuietCard {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("App", fontWeight = FontWeight.SemiBold)
-            Text("CycleTasker 1.0", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("CycleTasker ${BuildConfig.VERSION_NAME}", color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text("Offline. No accounts. No cloud. No internet permission.")
         }
     }
