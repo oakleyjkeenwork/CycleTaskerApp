@@ -62,7 +62,25 @@ Your data belongs to you and lives entirely on your device.
 - Import and export support.
 - Fully offline operation.
 
+### Project Principles
+
+When adding new features, prefer:
+
+-Simplicity over flexibility
+-Reliability over cleverness
+-Clarity over abstraction
+-Local ownership over cloud dependency
+
+If a feature makes the application more complicated without making it meaningfully more useful, it probably does not belong in CycleTasker.
+
+### License
+
+Personal project. All rights reserved.
+
 ---
+
+
+A quiet, offline task tracker built to help you keep the promises you make to yourself.
 
 ## Technology Stack
 
