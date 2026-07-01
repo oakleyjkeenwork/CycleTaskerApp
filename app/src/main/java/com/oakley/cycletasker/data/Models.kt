@@ -11,7 +11,8 @@ data class IndividualTask(
     val tagColor: Long = 0xFF64B5F6,
     val startDate: String = "",
     val repeatEveryDays: Int = 1,
-    val enabled: Boolean = true
+    val enabled: Boolean = true,
+    val addOns: List<TaskAddOn> = emptyList()
 )
 
 @Serializable
@@ -36,15 +37,31 @@ data class CycleDay(
 @Serializable
 data class CycleTask(
     val id: String = newId(),
-    val title: String = ""
+    val title: String = "",
+    val addOns: List<TaskAddOn> = emptyList()
 )
+
+@Serializable
+enum class TaskAddOn {
+    BodyWeight
+}
 
 @Serializable
 data class CompletionRecord(
     val date: String,
     val completedTaskIds: List<String> = emptyList(),
     val totalTaskIds: List<String> = emptyList(),
-    val percentComplete: Int = 100
+    val percentComplete: Int = 100,
+    val bodyWeightEntries: List<BodyWeightEntry> = emptyList()
+)
+
+@Serializable
+data class BodyWeightEntry(
+    val taskId: String,
+    val taskOrderKey: String,
+    val taskTitle: String,
+    val startWeight: Double? = null,
+    val finishWeight: Double? = null
 )
 
 @Serializable
@@ -52,7 +69,14 @@ data class AppSettings(
     val schemaVersion: Int = 1,
     val notificationsEnabled: Boolean = true,
     val themePreset: String = "cycle_blue",
-    val customTheme: CustomTheme = CustomTheme()
+    val customTheme: CustomTheme = CustomTheme(),
+    val taskOrder: List<TaskOrderEntry> = emptyList()
+)
+
+@Serializable
+data class TaskOrderEntry(
+    val taskOrderKey: String,
+    val order: Int
 )
 
 @Serializable

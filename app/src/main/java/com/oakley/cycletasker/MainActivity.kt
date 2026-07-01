@@ -9,6 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -71,6 +72,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusEvent
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -79,12 +81,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.oakley.cycletasker.data.AppState
 import com.oakley.cycletasker.data.AppSettings
+import com.oakley.cycletasker.data.BodyWeightEntry
 import com.oakley.cycletasker.data.CustomTheme
 import com.oakley.cycletasker.data.CycleDay
 import com.oakley.cycletasker.data.CycleRoutine
 import com.oakley.cycletasker.data.CycleTask
 import com.oakley.cycletasker.data.CycleTaskerRepository
 import com.oakley.cycletasker.data.IndividualTask
+import com.oakley.cycletasker.data.TaskAddOn
+import com.oakley.cycletasker.data.TaskOrderEntry
 import com.oakley.cycletasker.data.newId
 import com.oakley.cycletasker.domain.CalendarLabel
 import com.oakley.cycletasker.domain.ScheduleEngine
@@ -123,6 +128,20 @@ private enum class SettingsSection(val title: String) {
     ThemeUi("Theme/UI")
 }
 
+private enum class CalendarSection(val title: String) {
+    Month("Month"),
+    BodyWeight("Body Weight")
+}
+
+private enum class WeightRange(val title: String) {
+    Weekly("Weekly"),
+    Monthly("Monthly"),
+    Yearly("Yearly"),
+    AllTime("All time")
+}
+
+private const val MaxTagLength = 4
+
 private val TagPalette = listOf(
     0xFF64B5F6,
     0xFFA5D6A7,
@@ -138,6 +157,11 @@ private data class ThemePreset(
     val key: String,
     val name: String,
     val colors: CustomTheme
+)
+
+private data class BodyWeightPoint(
+    val date: LocalDate,
+    val weight: Double
 )
 
 private val ThemePresets = listOf(
@@ -309,7 +333,62 @@ private fun CycleTaskerApp(repository: CycleTaskerRepository) {
             date = date,
             tasks = currentTasks,
             completedIds = completedIds,
-            compact = false
+            compact = false,
+            bodyWeightEntries = state.completionHistory
+                .firstOrNull { it.date == date.toString() }
+                ?.bodyWeightEntries
+                .orEmpty()
+        )
+        saveState(
+            state.copy(
+                completionHistory = state.completionHistory
+                    .filterNot { it.date == date.toString() } + record
+            )
+        )
+    }
+
+    fun updateBodyWeight(
+        date: LocalDate,
+        task: TodayTask,
+        startWeight: Double?,
+        finishWeight: Double?
+    ) {
+        val today = LocalDate.now()
+        val yesterday = today.minusDays(1)
+        if (date != today && date != yesterday) return
+
+        val currentTasks = ScheduleEngine.scheduledTasksForDate(
+            state.individualTasks,
+            state.cycleRoutines,
+            state.completionHistory,
+            date
+        )
+        val currentRecord = state.completionHistory.firstOrNull { it.date == date.toString() }
+        val completedIds = currentTasks.filter { it.completed }.map { it.id }.toSet()
+        val updatedBodyWeights = currentRecord
+            ?.bodyWeightEntries
+            .orEmpty()
+            .filterNot { it.taskId == task.id }
+            .let { existing ->
+                if (startWeight == null && finishWeight == null) {
+                    existing
+                } else {
+                    existing + BodyWeightEntry(
+                        taskId = task.id,
+                        taskOrderKey = task.orderKey,
+                        taskTitle = task.title,
+                        startWeight = startWeight,
+                        finishWeight = finishWeight
+                    )
+                }
+            }
+
+        val record = ScheduleEngine.completionRecordFor(
+            date = date,
+            tasks = currentTasks,
+            completedIds = completedIds,
+            compact = false,
+            bodyWeightEntries = updatedBodyWeights
         )
         saveState(
             state.copy(
@@ -423,7 +502,11 @@ private fun CycleTaskerApp(repository: CycleTaskerRepository) {
                             state = state,
                             selectedDate = selectedDate,
                             onDateSelected = { selectedDate = it },
-                            onCheckedChange = ::replaceCompletion
+                            onCheckedChange = ::replaceCompletion,
+                            onBodyWeightChange = ::updateBodyWeight,
+                            onTaskOrderChange = { taskOrder ->
+                                saveState(state.copy(settings = state.settings.copy(taskOrder = taskOrder)))
+                            }
                         )
 
                         Tab.Calendar -> CalendarScreen(
@@ -505,21 +588,49 @@ private fun TodayScreen(
     state: AppState,
     selectedDate: LocalDate,
     onDateSelected: (LocalDate) -> Unit,
-    onCheckedChange: (LocalDate, String, Boolean) -> Unit
+    onCheckedChange: (LocalDate, String, Boolean) -> Unit,
+    onBodyWeightChange: (LocalDate, TodayTask, Double?, Double?) -> Unit,
+    onTaskOrderChange: (List<TaskOrderEntry>) -> Unit
 ) {
     val today = LocalDate.now()
     val yesterday = today.minusDays(1)
     val activeDate = if (selectedDate == yesterday) yesterday else today
-    val tasks = ScheduleEngine.scheduledTasksForDate(
+    val scheduledTasks = ScheduleEngine.scheduledTasksForDate(
         state.individualTasks,
         state.cycleRoutines,
         state.completionHistory,
         activeDate
     )
+    val tasks = ScheduleEngine.sortTasksByOrder(scheduledTasks, state.settings.taskOrder)
+    val record = state.completionHistory.firstOrNull { it.date == activeDate.toString() }
     val completed = tasks.count { it.completed }
     val total = tasks.size
     val percent = ScheduleEngine.completionPercent(tasks)
-    val groupedTasks = tasks.groupBy { it.groupTitle }
+    var editingOrder by remember { mutableStateOf(false) }
+
+    LaunchedEffect(scheduledTasks.map { it.orderKey }, state.settings.taskOrder) {
+        val existingKeys = state.settings.taskOrder.map { it.taskOrderKey }.toSet()
+        val missingKeys = scheduledTasks
+            .map { it.orderKey }
+            .distinct()
+            .filterNot { it in existingKeys }
+        if (missingKeys.isNotEmpty()) {
+            val startOrder = state.settings.taskOrder.maxOfOrNull { it.order }?.plus(1) ?: 0
+            onTaskOrderChange(
+                state.settings.taskOrder + missingKeys.mapIndexed { index, key ->
+                    TaskOrderEntry(taskOrderKey = key, order = startOrder + index)
+                }
+            )
+        }
+    }
+
+    fun moveTask(fromIndex: Int, toIndex: Int) {
+        if (toIndex !in tasks.indices) return
+        val visibleKeys = tasks.map { it.orderKey }.toMutableList()
+        val moved = visibleKeys.removeAt(fromIndex)
+        visibleKeys.add(toIndex, moved)
+        onTaskOrderChange(rebuildTaskOrder(state.settings.taskOrder, visibleKeys))
+    }
 
     LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
@@ -545,6 +656,18 @@ private fun TodayScreen(
                     .fillMaxWidth()
                     .padding(top = 8.dp)
             )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("Tasks:", fontWeight = FontWeight.SemiBold)
+                TextButton(onClick = { editingOrder = !editingOrder }) {
+                    Text(if (editingOrder) "Done" else "Edit order")
+                }
+            }
         }
 
         if (tasks.isEmpty()) {
@@ -557,23 +680,24 @@ private fun TodayScreen(
                 }
             }
         } else {
-            groupedTasks.forEach { (source, sourceTasks) ->
-                item {
-                    Text(
-                        source.uppercase(Locale.UK),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                items(sourceTasks, key = { it.id }) { task ->
-                    TodayTaskRow(
-                        task = task,
-                        editable = true,
-                        onCheckedChange = { checked ->
-                            onCheckedChange(activeDate, task.id, checked)
-                        }
-                    )
-                }
+            items(tasks, key = { it.id }) { task ->
+                val index = tasks.indexOfFirst { it.id == task.id }
+                TodayTaskRow(
+                    task = task,
+                    editable = true,
+                    editingOrder = editingOrder,
+                    canMoveUp = index > 0,
+                    canMoveDown = index < tasks.lastIndex,
+                    bodyWeightEntry = record?.bodyWeightEntries?.firstOrNull { it.taskId == task.id },
+                    onMoveUp = { moveTask(index, index - 1) },
+                    onMoveDown = { moveTask(index, index + 1) },
+                    onBodyWeightChange = { start, finish ->
+                        onBodyWeightChange(activeDate, task, start, finish)
+                    },
+                    onCheckedChange = { checked ->
+                        onCheckedChange(activeDate, task.id, checked)
+                    }
+                )
             }
         }
     }
@@ -633,6 +757,13 @@ private fun ToggleButton(
 private fun TodayTaskRow(
     task: TodayTask,
     editable: Boolean,
+    editingOrder: Boolean,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    bodyWeightEntry: BodyWeightEntry?,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    onBodyWeightChange: (Double?, Double?) -> Unit,
     onCheckedChange: (Boolean) -> Unit
 ) {
     QuietCard {
@@ -654,6 +785,83 @@ private fun TodayTaskRow(
                 checked = task.completed,
                 enabled = editable,
                 onCheckedChange = onCheckedChange
+            )
+        }
+        if (editingOrder) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    enabled = canMoveUp,
+                    onClick = onMoveUp,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Up")
+                }
+                OutlinedButton(
+                    enabled = canMoveDown,
+                    onClick = onMoveDown,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Down")
+                }
+            }
+        }
+        if (task.hasBodyWeight) {
+            BodyWeightFields(
+                entry = bodyWeightEntry,
+                editable = editable,
+                onBodyWeightChange = onBodyWeightChange
+            )
+        }
+    }
+}
+
+@Composable
+private fun BodyWeightFields(
+    entry: BodyWeightEntry?,
+    editable: Boolean,
+    onBodyWeightChange: (Double?, Double?) -> Unit
+) {
+    var startText by remember(entry?.taskId, entry?.startWeight) {
+        mutableStateOf(entry?.startWeight?.formatWeight().orEmpty())
+    }
+    var finishText by remember(entry?.taskId, entry?.finishWeight) {
+        mutableStateOf(entry?.finishWeight?.formatWeight().orEmpty())
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            "Body weight",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = startText,
+                onValueChange = { value ->
+                    startText = filterWeightInput(value)
+                    onBodyWeightChange(startText.toDoubleOrNull(), finishText.toDoubleOrNull())
+                },
+                enabled = editable,
+                label = { Text("Start") },
+                modifier = Modifier
+                    .weight(1f)
+                    .bringIntoViewOnFocus(),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+            )
+            OutlinedTextField(
+                value = finishText,
+                onValueChange = { value ->
+                    finishText = filterWeightInput(value)
+                    onBodyWeightChange(startText.toDoubleOrNull(), finishText.toDoubleOrNull())
+                },
+                enabled = editable,
+                label = { Text("Finish") },
+                modifier = Modifier
+                    .weight(1f)
+                    .bringIntoViewOnFocus(),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
             )
         }
     }
@@ -738,13 +946,16 @@ private fun IndividualTaskForm(
 ) {
     val today = remember { LocalDate.now().toString() }
     var title by remember(initialTask?.id) { mutableStateOf(initialTask?.title.orEmpty()) }
-    var tag by remember(initialTask?.id) { mutableStateOf(initialTask?.tag.orEmpty()) }
+    var tag by remember(initialTask?.id) { mutableStateOf(normalizeTagInput(initialTask?.tag.orEmpty())) }
     var color by remember(initialTask?.id) { mutableStateOf(initialTask?.tagColor ?: TagPalette.first()) }
     var startDate by remember(initialTask?.id) { mutableStateOf(initialTask?.startDate ?: today) }
     var repeatEvery by remember(initialTask?.id) {
         mutableStateOf((initialTask?.repeatEveryDays ?: 1).toString())
     }
     var enabled by remember(initialTask?.id) { mutableStateOf(initialTask?.enabled ?: true) }
+    var bodyWeightEnabled by remember(initialTask?.id) {
+        mutableStateOf(TaskAddOn.BodyWeight in initialTask?.addOns.orEmpty())
+    }
     var error by remember { mutableStateOf<String?>(null) }
 
     FormScaffold(
@@ -768,7 +979,8 @@ private fun IndividualTaskForm(
                             tagColor = color,
                             startDate = parsedDate.toString(),
                             repeatEveryDays = parsedInterval,
-                            enabled = enabled
+                            enabled = enabled,
+                            addOns = if (bodyWeightEnabled) listOf(TaskAddOn.BodyWeight) else emptyList()
                         )
                     )
                 }
@@ -780,10 +992,10 @@ private fun IndividualTaskForm(
             onValueChange = { title = it },
             label = "Title"
         )
-        TextFieldBlock(
+        TagFieldBlock(
             value = tag,
             onValueChange = { tag = it },
-            label = "Calendar tag"
+            label = "Tag, maximum $MaxTagLength characters"
         )
         ColorPicker(selected = color, onSelected = { color = it })
         DateFieldBlock(
@@ -798,6 +1010,10 @@ private fun IndividualTaskForm(
             keyboardType = KeyboardType.Number
         )
         EnabledRow(enabled = enabled, onEnabledChange = { enabled = it })
+        AdditionalFieldsSection(
+            bodyWeightEnabled = bodyWeightEnabled,
+            onBodyWeightEnabledChange = { bodyWeightEnabled = it }
+        )
         error?.let { ErrorText(it) }
     }
 }
@@ -884,7 +1100,7 @@ private fun CycleRoutineForm(
         listOf(CycleDay(dayNumber = 1, title = "Day 1", tasks = emptyList()))
     }
     var name by remember(initialRoutine?.id) { mutableStateOf(initialRoutine?.name.orEmpty()) }
-    var tag by remember(initialRoutine?.id) { mutableStateOf(initialRoutine?.tag.orEmpty()) }
+    var tag by remember(initialRoutine?.id) { mutableStateOf(normalizeTagInput(initialRoutine?.tag.orEmpty())) }
     var color by remember(initialRoutine?.id) { mutableStateOf(initialRoutine?.tagColor ?: TagPalette[1]) }
     var startDate by remember(initialRoutine?.id) { mutableStateOf(initialRoutine?.startDate ?: today) }
     var enabled by remember(initialRoutine?.id) { mutableStateOf(initialRoutine?.enabled ?: true) }
@@ -947,10 +1163,10 @@ private fun CycleRoutineForm(
             onValueChange = { name = it },
             label = "Routine name"
         )
-        TextFieldBlock(
+        TagFieldBlock(
             value = tag,
             onValueChange = { tag = it },
-            label = "Calendar tag"
+            label = "Tag, maximum $MaxTagLength characters"
         )
         ColorPicker(selected = color, onSelected = { color = it })
         DateFieldBlock(
@@ -1007,6 +1223,25 @@ private fun CycleRoutineForm(
                         )
                     }
                 },
+                onTaskBodyWeightChange = { taskId, enabled ->
+                    updateDay(day.dayNumber) { current ->
+                        current.copy(
+                            tasks = current.tasks.map { task ->
+                                if (task.id == taskId) {
+                                    task.copy(
+                                        addOns = if (enabled) {
+                                            (task.addOns + TaskAddOn.BodyWeight).distinct()
+                                        } else {
+                                            task.addOns - TaskAddOn.BodyWeight
+                                        }
+                                    )
+                                } else {
+                                    task
+                                }
+                            }
+                        )
+                    }
+                },
                 onAddTask = {
                     updateDay(day.dayNumber) { current ->
                         current.copy(tasks = current.tasks + CycleTask())
@@ -1029,6 +1264,7 @@ private fun CycleDayEditor(
     day: CycleDay,
     onTitleChange: (String) -> Unit,
     onTaskChange: (String, String) -> Unit,
+    onTaskBodyWeightChange: (String, Boolean) -> Unit,
     onAddTask: () -> Unit,
     onDeleteTask: (String) -> Unit
 ) {
@@ -1045,23 +1281,31 @@ private fun CycleDayEditor(
                 singleLine = true
             )
             day.tasks.forEach { task ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedTextField(
-                        value = task.title,
-                        onValueChange = { onTaskChange(task.id, it) },
-                        label = { Text("Checklist item") },
-                        modifier = Modifier
-                            .weight(1f)
-                            .bringIntoViewOnFocus(),
-                        singleLine = true
-                    )
-                    TextButton(onClick = { onDeleteTask(task.id) }) {
-                        Text("Delete")
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = task.title,
+                            onValueChange = { onTaskChange(task.id, it) },
+                            label = { Text("Checklist item") },
+                            modifier = Modifier
+                                .weight(1f)
+                                .bringIntoViewOnFocus(),
+                            singleLine = true
+                        )
+                        TextButton(onClick = { onDeleteTask(task.id) }) {
+                            Text("Delete")
+                        }
                     }
+                    AdditionalFieldsSection(
+                        bodyWeightEnabled = TaskAddOn.BodyWeight in task.addOns,
+                        onBodyWeightEnabledChange = { enabled ->
+                            onTaskBodyWeightChange(task.id, enabled)
+                        }
+                    )
                 }
             }
             OutlinedButton(onClick = onAddTask, modifier = Modifier.fillMaxWidth()) {
@@ -1078,12 +1322,21 @@ private fun CalendarScreen(
     onEnsureMonthRecords: (YearMonth) -> Unit
 ) {
     var month by remember { mutableStateOf(YearMonth.now()) }
+    var selectedSection by remember { mutableStateOf(CalendarSection.Month) }
+    var weightRange by remember { mutableStateOf(WeightRange.Monthly) }
     var selectedHistoryDate by remember { mutableStateOf<LocalDate?>(null) }
     val today = LocalDate.now()
     val yesterday = today.minusDays(1)
+    val hasBodyWeight = state.bodyWeightPoints().isNotEmpty()
 
     LaunchedEffect(month, state.individualTasks, state.cycleRoutines) {
         onEnsureMonthRecords(month)
+    }
+
+    LaunchedEffect(hasBodyWeight) {
+        if (!hasBodyWeight) {
+            selectedSection = CalendarSection.Month
+        }
     }
 
     Column(
@@ -1094,6 +1347,32 @@ private fun CalendarScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         HeaderBlock(title = "Calendar", subtitle = month.format(MonthFormatter))
+
+        if (hasBodyWeight) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                CalendarSection.entries.forEach { section ->
+                    ToggleButton(
+                        text = section.title,
+                        selected = selectedSection == section,
+                        modifier = Modifier.weight(1f),
+                        onClick = { selectedSection = section }
+                    )
+                }
+            }
+        }
+
+        if (selectedSection == CalendarSection.BodyWeight && hasBodyWeight) {
+            BodyWeightGraphSection(
+                state = state,
+                range = weightRange,
+                onRangeChange = { weightRange = it }
+            )
+            return@Column
+        }
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1114,17 +1393,11 @@ private fun CalendarScreen(
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 week.forEach { date ->
-                    val labels = ScheduleEngine.labelsForDate(
-                        state.individualTasks,
-                        state.cycleRoutines,
-                        date
-                    )
                     val record = state.completionHistory.firstOrNull { it.date == date.toString() }
                     CalendarDayCell(
                         date = date,
                         month = month,
                         today = today,
-                        labels = labels,
                         percent = record?.percentComplete,
                         modifier = Modifier.weight(1f),
                         onClick = {
@@ -1171,7 +1444,6 @@ private fun CalendarDayCell(
     date: LocalDate,
     month: YearMonth,
     today: LocalDate,
-    labels: List<CalendarLabel>,
     percent: Int?,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
@@ -1180,8 +1452,6 @@ private fun CalendarDayCell(
     val isLocked = date.isBefore(yesterday)
     val inMonth = date.month == month.month
     val isToday = date == today
-    val shownLabels = labels.take(2)
-    val extraCount = labels.size - shownLabels.size
 
     Box(
         modifier = modifier
@@ -1208,18 +1478,8 @@ private fun CalendarDayCell(
                 textDecoration = if (isLocked) TextDecoration.LineThrough else TextDecoration.None,
                 color = if (isLocked) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
             )
-            shownLabels.forEach { label ->
-                MiniLabel(label)
-            }
-            if (extraCount > 0) {
-                Text(
-                    "+$extraCount",
-                    fontSize = 9.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
             Spacer(Modifier.weight(1f))
-            if (isLocked) {
+            if (date.isBefore(today)) {
                 Text(
                     "${percent ?: 100}%",
                     fontSize = 10.sp,
@@ -1265,6 +1525,132 @@ private fun DayHistoryCard(
                 Text(
                     "Open from Today to edit.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BodyWeightGraphSection(
+    state: AppState,
+    range: WeightRange,
+    onRangeChange: (WeightRange) -> Unit
+) {
+    val today = LocalDate.now()
+    val allPoints = state.bodyWeightPoints()
+    val points = allPoints
+        .filter { point ->
+            when (range) {
+                WeightRange.Weekly -> !point.date.isBefore(today.minusDays(6))
+                WeightRange.Monthly -> YearMonth.from(point.date) == YearMonth.from(today)
+                WeightRange.Yearly -> point.date.year == today.year
+                WeightRange.AllTime -> true
+            }
+        }
+        .sortedBy { it.date }
+
+    WeightRange.entries.chunked(2).forEach { rowOptions ->
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            rowOptions.forEach { option ->
+                ToggleButton(
+                    text = option.title,
+                    selected = range == option,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onRangeChange(option) }
+                )
+            }
+        }
+    }
+
+    QuietCard {
+        Text("Body Weight", style = MaterialTheme.typography.titleMedium)
+        if (points.isEmpty()) {
+            Text(
+                "No body weight recorded in this range.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            BodyWeightChart(points = points)
+            val latest = points.last()
+            Text(
+                "Latest ${latest.weight.formatWeight()} on ${latest.date.format(DateFormatter)}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun BodyWeightChart(points: List<BodyWeightPoint>) {
+    val lineColor = MaterialTheme.colorScheme.primary
+    val guideColor = MaterialTheme.colorScheme.outline
+    val textColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val minWeight = points.minOf { it.weight }
+    val maxWeight = points.maxOf { it.weight }
+    val range = (maxWeight - minWeight).takeIf { it > 0.0 } ?: 1.0
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(maxWeight.formatWeight(), color = textColor, fontSize = 12.sp)
+            Text(minWeight.formatWeight(), color = textColor, fontSize = 12.sp)
+        }
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(220.dp)
+        ) {
+            val left = 20f
+            val right = size.width - 12f
+            val top = 12f
+            val bottom = size.height - 24f
+            val usableWidth = right - left
+            val usableHeight = bottom - top
+
+            drawLine(
+                color = guideColor,
+                start = androidx.compose.ui.geometry.Offset(left, bottom),
+                end = androidx.compose.ui.geometry.Offset(right, bottom),
+                strokeWidth = 2f
+            )
+            drawLine(
+                color = guideColor,
+                start = androidx.compose.ui.geometry.Offset(left, top),
+                end = androidx.compose.ui.geometry.Offset(left, bottom),
+                strokeWidth = 2f
+            )
+
+            val offsets = points.mapIndexed { index, point ->
+                val x = if (points.size == 1) {
+                    left + usableWidth / 2f
+                } else {
+                    left + usableWidth * (index.toFloat() / (points.lastIndex.toFloat()))
+                }
+                val yRatio = ((point.weight - minWeight) / range).toFloat()
+                val y = bottom - usableHeight * yRatio
+                androidx.compose.ui.geometry.Offset(x, y)
+            }
+
+            offsets.zipWithNext().forEach { (start, end) ->
+                drawLine(
+                    color = lineColor,
+                    start = start,
+                    end = end,
+                    strokeWidth = 5f,
+                    cap = StrokeCap.Round
+                )
+            }
+            offsets.forEach { point ->
+                drawCircle(
+                    color = lineColor,
+                    radius = 5f,
+                    center = point
                 )
             }
         }
@@ -1656,6 +2042,61 @@ private fun TextFieldBlock(
     )
 }
 
+@Composable
+private fun TagFieldBlock(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = { onValueChange(normalizeTagInput(it)) },
+        label = { Text(label) },
+        modifier = Modifier
+            .fillMaxWidth()
+            .bringIntoViewOnFocus(),
+        singleLine = true
+    )
+}
+
+@Composable
+private fun AdditionalFieldsSection(
+    bodyWeightEnabled: Boolean,
+    onBodyWeightEnabledChange: (Boolean) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text("Additional fields", fontWeight = FontWeight.SemiBold)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 12.dp)
+            ) {
+                Text("Body weight")
+                Text(
+                    "Start and finish weight on Today",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            Switch(
+                checked = bodyWeightEnabled,
+                onCheckedChange = onBodyWeightEnabledChange
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun DateFieldBlock(
@@ -1882,7 +2323,53 @@ private fun parseIsoDate(value: String): LocalDate? {
 }
 
 private fun normalizeTag(value: String): String {
-    return value.trim().uppercase(Locale.UK).take(6)
+    return normalizeTagInput(value.trim())
+}
+
+private fun normalizeTagInput(value: String): String {
+    return value
+        .uppercase(Locale.UK)
+        .filter { it.isLetterOrDigit() }
+        .take(MaxTagLength)
+}
+
+private fun filterWeightInput(value: String): String {
+    val builder = StringBuilder()
+    var hasDecimal = false
+    value.forEach { char ->
+        when {
+            char.isDigit() -> builder.append(char)
+            char == '.' && !hasDecimal -> {
+                builder.append(char)
+                hasDecimal = true
+            }
+        }
+    }
+    return builder.toString().take(6)
+}
+
+private fun Double.formatWeight(): String {
+    return if (this % 1.0 == 0.0) {
+        toInt().toString()
+    } else {
+        "%.1f".format(Locale.UK, this)
+    }
+}
+
+private fun rebuildTaskOrder(
+    existing: List<TaskOrderEntry>,
+    visibleKeys: List<String>
+): List<TaskOrderEntry> {
+    val distinctVisibleKeys = visibleKeys.distinct()
+    val visibleSet = distinctVisibleKeys.toSet()
+    val remaining = existing
+        .filterNot { it.taskOrderKey in visibleSet }
+        .sortedBy { it.order }
+        .map { it.taskOrderKey }
+
+    return (distinctVisibleKeys + remaining).mapIndexed { index, key ->
+        TaskOrderEntry(taskOrderKey = key, order = index)
+    }
 }
 
 private fun toColor(value: Long): Color {
@@ -1904,6 +2391,16 @@ private fun AppSettings.toThemeColors(): UiThemeColors {
         surfaceVariant = source.surfaceVariant,
         outline = source.outline
     )
+}
+
+private fun AppState.bodyWeightPoints(): List<BodyWeightPoint> {
+    return completionHistory.flatMap { record ->
+        val date = parseIsoDate(record.date) ?: return@flatMap emptyList()
+        record.bodyWeightEntries.mapNotNull { entry ->
+            val weight = entry.finishWeight ?: entry.startWeight
+            weight?.let { BodyWeightPoint(date = date, weight = it) }
+        }
+    }.sortedBy { it.date }
 }
 
 private fun LocalDate.toPickerMillis(): Long {

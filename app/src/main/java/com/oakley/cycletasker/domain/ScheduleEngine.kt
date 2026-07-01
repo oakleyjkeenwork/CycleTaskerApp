@@ -5,6 +5,9 @@ import com.oakley.cycletasker.data.CycleDay
 import com.oakley.cycletasker.data.CycleRoutine
 import com.oakley.cycletasker.data.CycleTask
 import com.oakley.cycletasker.data.IndividualTask
+import com.oakley.cycletasker.data.BodyWeightEntry
+import com.oakley.cycletasker.data.TaskAddOn
+import com.oakley.cycletasker.data.TaskOrderEntry
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.temporal.ChronoUnit
@@ -12,11 +15,13 @@ import kotlin.math.roundToInt
 
 data class TodayTask(
     val id: String,
+    val orderKey: String,
     val title: String,
     val groupTitle: String,
     val tag: String,
     val tagColor: Long,
-    val completed: Boolean
+    val completed: Boolean,
+    val hasBodyWeight: Boolean
 )
 
 data class CalendarLabel(
@@ -43,11 +48,13 @@ object ScheduleEngine {
                 val taskId = individualTaskInstanceId(task, date)
                 TodayTask(
                     id = taskId,
+                    orderKey = individualTaskOrderKey(task),
                     title = task.title,
                     groupTitle = "Individual",
                     tag = task.tag,
                     tagColor = task.tagColor,
-                    completed = taskId in completedIds
+                    completed = taskId in completedIds,
+                    hasBodyWeight = TaskAddOn.BodyWeight in task.addOns
                 )
             }
 
@@ -57,16 +64,30 @@ object ScheduleEngine {
                 val taskId = cycleTaskInstanceId(routine, cycleDay, task, date)
                 TodayTask(
                     id = taskId,
+                    orderKey = cycleTaskOrderKey(routine, cycleDay, task),
                     title = task.title,
                     groupTitle = "Cycle: ${routine.name} / ${cycleDay.title}",
                     tag = routine.tag,
                     tagColor = routine.tagColor,
-                    completed = taskId in completedIds
+                    completed = taskId in completedIds,
+                    hasBodyWeight = TaskAddOn.BodyWeight in task.addOns
                 )
             }
         }
 
         return individualDue + cycleDue
+    }
+
+    fun sortTasksByOrder(
+        tasks: List<TodayTask>,
+        taskOrder: List<TaskOrderEntry>
+    ): List<TodayTask> {
+        val orderMap = taskOrder.associate { it.taskOrderKey to it.order }
+        return tasks.sortedWith(
+            compareBy<TodayTask> { orderMap[it.orderKey] ?: Int.MAX_VALUE }
+                .thenBy { it.title.lowercase() }
+                .thenBy { it.id }
+        )
     }
 
     fun individualDueOn(task: IndividualTask, date: LocalDate): Boolean {
@@ -113,7 +134,8 @@ object ScheduleEngine {
         date: LocalDate,
         tasks: List<TodayTask>,
         completedIds: Set<String>,
-        compact: Boolean
+        compact: Boolean,
+        bodyWeightEntries: List<BodyWeightEntry> = emptyList()
     ): CompletionRecord {
         val dueIds = tasks.map { it.id }
         val normalizedCompleted = completedIds.intersect(dueIds.toSet()).toList()
@@ -122,7 +144,8 @@ object ScheduleEngine {
             date = date.toString(),
             completedTaskIds = if (compact) emptyList() else normalizedCompleted,
             totalTaskIds = if (compact) emptyList() else dueIds,
-            percentComplete = percent
+            percentComplete = percent,
+            bodyWeightEntries = bodyWeightEntries
         )
     }
 
@@ -158,6 +181,18 @@ object ScheduleEngine {
 
     private fun individualTaskInstanceId(task: IndividualTask, date: LocalDate): String {
         return "individual:${task.id}:$date"
+    }
+
+    private fun individualTaskOrderKey(task: IndividualTask): String {
+        return "individual:${task.id}"
+    }
+
+    private fun cycleTaskOrderKey(
+        routine: CycleRoutine,
+        day: CycleDay,
+        task: CycleTask
+    ): String {
+        return "cycle:${routine.id}:day:${day.dayNumber}:task:${task.id}"
     }
 
     private fun cycleTaskInstanceId(

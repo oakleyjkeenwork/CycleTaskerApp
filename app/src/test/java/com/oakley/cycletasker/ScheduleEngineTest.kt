@@ -4,6 +4,7 @@ import com.oakley.cycletasker.data.CycleDay
 import com.oakley.cycletasker.data.CycleRoutine
 import com.oakley.cycletasker.data.CycleTask
 import com.oakley.cycletasker.data.IndividualTask
+import com.oakley.cycletasker.data.TaskOrderEntry
 import com.oakley.cycletasker.domain.ScheduleEngine
 import com.oakley.cycletasker.domain.TodayTask
 import java.time.LocalDate
@@ -54,11 +55,29 @@ class ScheduleEngineTest {
     @Test
     fun completionPercentTreatsEveryTaskEqually() {
         val tasks = listOf(
-            TodayTask("a", "A", "Individual", "A", 0xFF64B5F6, completed = true),
-            TodayTask("b", "B", "Individual", "B", 0xFF64B5F6, completed = true),
-            TodayTask("c", "C", "Individual", "C", 0xFF64B5F6, completed = false)
+            TodayTask("a", "key-a", "A", "Individual", "A", 0xFF64B5F6, completed = true, hasBodyWeight = false),
+            TodayTask("b", "key-b", "B", "Individual", "B", 0xFF64B5F6, completed = true, hasBodyWeight = false),
+            TodayTask("c", "key-c", "C", "Individual", "C", 0xFF64B5F6, completed = false, hasBodyWeight = false)
         )
 
         assertEquals(67, ScheduleEngine.completionPercent(tasks))
+    }
+
+    @Test
+    fun taskOrderUsesStableOrderKeys() {
+        val tasks = listOf(
+            TodayTask("dated-a", "key-a", "A", "Individual", "A", 0xFF64B5F6, completed = false, hasBodyWeight = false),
+            TodayTask("dated-b", "key-b", "B", "Individual", "B", 0xFF64B5F6, completed = false, hasBodyWeight = false)
+        )
+
+        val ordered = ScheduleEngine.sortTasksByOrder(
+            tasks,
+            listOf(
+                TaskOrderEntry("key-b", 0),
+                TaskOrderEntry("key-a", 1)
+            )
+        )
+
+        assertEquals(listOf("key-b", "key-a"), ordered.map { it.orderKey })
     }
 }
