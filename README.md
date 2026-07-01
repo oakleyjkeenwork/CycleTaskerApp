@@ -62,6 +62,8 @@ Your data belongs to you and lives entirely on your device.
 - Import and export support.
 - Fully offline operation.
 
+---
+
 ### Project Principles
 
 When adding new features, prefer:
@@ -72,6 +74,8 @@ When adding new features, prefer:
 -Local ownership over cloud dependency
 
 If a feature makes the application more complicated without making it meaningfully more useful, it probably does not belong in CycleTasker.
+
+---
 
 ### License
 
