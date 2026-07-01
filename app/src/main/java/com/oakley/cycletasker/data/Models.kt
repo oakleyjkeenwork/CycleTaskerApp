@@ -70,7 +70,8 @@ data class AppSettings(
     val notificationsEnabled: Boolean = true,
     val themePreset: String = "cycle_blue",
     val customTheme: CustomTheme = CustomTheme(),
-    val taskOrder: List<TaskOrderEntry> = emptyList()
+    val taskOrder: List<TaskOrderEntry> = emptyList(),
+    val weightUnit: WeightUnit = WeightUnit.Kilograms
 )
 
 @Serializable
@@ -78,6 +79,12 @@ data class TaskOrderEntry(
     val taskOrderKey: String,
     val order: Int
 )
+
+@Serializable
+enum class WeightUnit {
+    Kilograms,
+    Pounds
+}
 
 @Serializable
 data class CustomTheme(

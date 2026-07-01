@@ -90,6 +90,7 @@ import com.oakley.cycletasker.data.CycleTaskerRepository
 import com.oakley.cycletasker.data.IndividualTask
 import com.oakley.cycletasker.data.TaskAddOn
 import com.oakley.cycletasker.data.TaskOrderEntry
+import com.oakley.cycletasker.data.WeightUnit
 import com.oakley.cycletasker.data.newId
 import com.oakley.cycletasker.domain.CalendarLabel
 import com.oakley.cycletasker.domain.ScheduleEngine
@@ -125,6 +126,7 @@ private enum class Tab(val title: String, val iconText: String) {
 
 private enum class SettingsSection(val title: String) {
     General("General"),
+    Units("Units"),
     ThemeUi("Theme/UI")
 }
 
@@ -140,7 +142,7 @@ private enum class WeightRange(val title: String) {
     AllTime("All time")
 }
 
-private const val MaxTagLength = 4
+private const val MaxTagLength = 8
 
 private val TagPalette = listOf(
     0xFF64B5F6,
@@ -161,7 +163,7 @@ private data class ThemePreset(
 
 private data class BodyWeightPoint(
     val date: LocalDate,
-    val weight: Double
+    val weightKg: Double
 )
 
 private val ThemePresets = listOf(
@@ -511,6 +513,7 @@ private fun CycleTaskerApp(repository: CycleTaskerRepository) {
 
                         Tab.Calendar -> CalendarScreen(
                             state = state,
+                            weightUnit = state.settings.weightUnit,
                             onOpenEditableDate = { date ->
                                 selectedDate = date
                                 selectedTab = Tab.Today
@@ -689,6 +692,7 @@ private fun TodayScreen(
                     canMoveUp = index > 0,
                     canMoveDown = index < tasks.lastIndex,
                     bodyWeightEntry = record?.bodyWeightEntries?.firstOrNull { it.taskId == task.id },
+                    weightUnit = state.settings.weightUnit,
                     onMoveUp = { moveTask(index, index - 1) },
                     onMoveDown = { moveTask(index, index + 1) },
                     onBodyWeightChange = { start, finish ->
@@ -761,6 +765,7 @@ private fun TodayTaskRow(
     canMoveUp: Boolean,
     canMoveDown: Boolean,
     bodyWeightEntry: BodyWeightEntry?,
+    weightUnit: WeightUnit,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
     onBodyWeightChange: (Double?, Double?) -> Unit,
@@ -809,6 +814,7 @@ private fun TodayTaskRow(
             BodyWeightFields(
                 entry = bodyWeightEntry,
                 editable = editable,
+                weightUnit = weightUnit,
                 onBodyWeightChange = onBodyWeightChange
             )
         }
@@ -819,18 +825,19 @@ private fun TodayTaskRow(
 private fun BodyWeightFields(
     entry: BodyWeightEntry?,
     editable: Boolean,
+    weightUnit: WeightUnit,
     onBodyWeightChange: (Double?, Double?) -> Unit
 ) {
-    var startText by remember(entry?.taskId, entry?.startWeight) {
-        mutableStateOf(entry?.startWeight?.formatWeight().orEmpty())
+    var startText by remember(entry?.taskId, entry?.startWeight, weightUnit) {
+        mutableStateOf(entry?.startWeight?.fromKg(weightUnit)?.formatWeight().orEmpty())
     }
-    var finishText by remember(entry?.taskId, entry?.finishWeight) {
-        mutableStateOf(entry?.finishWeight?.formatWeight().orEmpty())
+    var finishText by remember(entry?.taskId, entry?.finishWeight, weightUnit) {
+        mutableStateOf(entry?.finishWeight?.fromKg(weightUnit)?.formatWeight().orEmpty())
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
-            "Body weight",
+            "Body weight (${weightUnit.shortLabel})",
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -839,7 +846,10 @@ private fun BodyWeightFields(
                 value = startText,
                 onValueChange = { value ->
                     startText = filterWeightInput(value)
-                    onBodyWeightChange(startText.toDoubleOrNull(), finishText.toDoubleOrNull())
+                    onBodyWeightChange(
+                        startText.toDoubleOrNull()?.toKg(weightUnit),
+                        finishText.toDoubleOrNull()?.toKg(weightUnit)
+                    )
                 },
                 enabled = editable,
                 label = { Text("Start") },
@@ -853,7 +863,10 @@ private fun BodyWeightFields(
                 value = finishText,
                 onValueChange = { value ->
                     finishText = filterWeightInput(value)
-                    onBodyWeightChange(startText.toDoubleOrNull(), finishText.toDoubleOrNull())
+                    onBodyWeightChange(
+                        startText.toDoubleOrNull()?.toKg(weightUnit),
+                        finishText.toDoubleOrNull()?.toKg(weightUnit)
+                    )
                 },
                 enabled = editable,
                 label = { Text("Finish") },
@@ -1318,6 +1331,7 @@ private fun CycleDayEditor(
 @Composable
 private fun CalendarScreen(
     state: AppState,
+    weightUnit: WeightUnit,
     onOpenEditableDate: (LocalDate) -> Unit,
     onEnsureMonthRecords: (YearMonth) -> Unit
 ) {
@@ -1368,6 +1382,7 @@ private fun CalendarScreen(
             BodyWeightGraphSection(
                 state = state,
                 range = weightRange,
+                weightUnit = weightUnit,
                 onRangeChange = { weightRange = it }
             )
             return@Column
@@ -1535,6 +1550,7 @@ private fun DayHistoryCard(
 private fun BodyWeightGraphSection(
     state: AppState,
     range: WeightRange,
+    weightUnit: WeightUnit,
     onRangeChange: (WeightRange) -> Unit
 ) {
     val today = LocalDate.now()
@@ -1574,10 +1590,10 @@ private fun BodyWeightGraphSection(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         } else {
-            BodyWeightChart(points = points)
+            BodyWeightChart(points = points, weightUnit = weightUnit)
             val latest = points.last()
             Text(
-                "Latest ${latest.weight.formatWeight()} on ${latest.date.format(DateFormatter)}",
+                "Latest ${latest.weightKg.fromKg(weightUnit).formatWeight()} ${weightUnit.shortLabel} on ${latest.date.format(DateFormatter)}",
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
@@ -1585,12 +1601,17 @@ private fun BodyWeightGraphSection(
 }
 
 @Composable
-private fun BodyWeightChart(points: List<BodyWeightPoint>) {
+private fun BodyWeightChart(points: List<BodyWeightPoint>, weightUnit: WeightUnit) {
     val lineColor = MaterialTheme.colorScheme.primary
     val guideColor = MaterialTheme.colorScheme.outline
     val textColor = MaterialTheme.colorScheme.onSurfaceVariant
-    val minWeight = points.minOf { it.weight }
-    val maxWeight = points.maxOf { it.weight }
+    val displayPoints = points.map { it.copy(weightKg = it.weightKg.fromKg(weightUnit)) }
+    val recordedMin = displayPoints.minOf { it.weightKg }
+    val recordedMax = displayPoints.maxOf { it.weightKg }
+    val recordedRange = recordedMax - recordedMin
+    val padding = maxOf(recordedRange * 0.15, 2.0)
+    val minWeight = (recordedMin - padding).coerceAtLeast(0.0)
+    val maxWeight = recordedMax + padding
     val range = (maxWeight - minWeight).takeIf { it > 0.0 } ?: 1.0
 
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1598,8 +1619,8 @@ private fun BodyWeightChart(points: List<BodyWeightPoint>) {
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(maxWeight.formatWeight(), color = textColor, fontSize = 12.sp)
-            Text(minWeight.formatWeight(), color = textColor, fontSize = 12.sp)
+            Text("${recordedMin.formatWeight()}-${recordedMax.formatWeight()}", color = textColor, fontSize = 12.sp)
+            Text(weightUnit.shortLabel, color = textColor, fontSize = 12.sp)
         }
         Canvas(
             modifier = Modifier
@@ -1626,13 +1647,13 @@ private fun BodyWeightChart(points: List<BodyWeightPoint>) {
                 strokeWidth = 2f
             )
 
-            val offsets = points.mapIndexed { index, point ->
-                val x = if (points.size == 1) {
+            val offsets = displayPoints.mapIndexed { index, point ->
+                val x = if (displayPoints.size == 1) {
                     left + usableWidth / 2f
                 } else {
-                    left + usableWidth * (index.toFloat() / (points.lastIndex.toFloat()))
+                    left + usableWidth * (index.toFloat() / (displayPoints.lastIndex.toFloat()))
                 }
-                val yRatio = ((point.weight - minWeight) / range).toFloat()
+                val yRatio = ((point.weightKg - minWeight) / range).toFloat()
                 val y = bottom - usableHeight * yRatio
                 androidx.compose.ui.geometry.Offset(x, y)
             }
@@ -1731,10 +1752,39 @@ private fun SettingsScreen(
                 onResetClick = { confirmingReset = true }
             )
 
+            SettingsSection.Units -> UnitsSettingsSection(
+                settings = settings,
+                onSettingsChange = onSettingsChange
+            )
+
             SettingsSection.ThemeUi -> ThemeUiSettingsSection(
                 settings = settings,
                 onSettingsChange = onSettingsChange
             )
+        }
+    }
+}
+
+@Composable
+private fun UnitsSettingsSection(
+    settings: AppSettings,
+    onSettingsChange: (AppSettings) -> Unit
+) {
+    QuietCard {
+        Text("Body weight unit", fontWeight = FontWeight.SemiBold)
+        Text(
+            "Stored locally as kg, shown in your preferred unit.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            WeightUnit.entries.forEach { unit ->
+                ToggleButton(
+                    text = unit.shortLabel,
+                    selected = settings.weightUnit == unit,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSettingsChange(settings.copy(weightUnit = unit)) }
+                )
+            }
         }
     }
 }
@@ -2356,6 +2406,26 @@ private fun Double.formatWeight(): String {
     }
 }
 
+private val WeightUnit.shortLabel: String
+    get() = when (this) {
+        WeightUnit.Kilograms -> "kg"
+        WeightUnit.Pounds -> "lbs"
+    }
+
+private fun Double.fromKg(unit: WeightUnit): Double {
+    return when (unit) {
+        WeightUnit.Kilograms -> this
+        WeightUnit.Pounds -> this * 2.2046226218
+    }
+}
+
+private fun Double.toKg(unit: WeightUnit): Double {
+    return when (unit) {
+        WeightUnit.Kilograms -> this
+        WeightUnit.Pounds -> this / 2.2046226218
+    }
+}
+
 private fun rebuildTaskOrder(
     existing: List<TaskOrderEntry>,
     visibleKeys: List<String>
@@ -2398,7 +2468,7 @@ private fun AppState.bodyWeightPoints(): List<BodyWeightPoint> {
         val date = parseIsoDate(record.date) ?: return@flatMap emptyList()
         record.bodyWeightEntries.mapNotNull { entry ->
             val weight = entry.finishWeight ?: entry.startWeight
-            weight?.let { BodyWeightPoint(date = date, weight = it) }
+            weight?.let { BodyWeightPoint(date = date, weightKg = it) }
         }
     }.sortedBy { it.date }
 }
