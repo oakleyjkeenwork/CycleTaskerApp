@@ -83,9 +83,6 @@ Personal project. All rights reserved.
 
 ---
 
-
-A quiet, offline task tracker built to help you keep the promises you make to yourself.
-
 ## Technology Stack
 
 - **Language:** Kotlin
